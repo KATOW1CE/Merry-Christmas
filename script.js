@@ -1,0 +1,431 @@
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision';
+
+const CONFIG = {
+  colors: { bg: 0x000510, blueMain: 0x87cefa, whiteSilver: 0xffffff, fairyDust: 0xe0ffff },
+  tree: { height: 26, radius: 9, count: 1200 },
+  fairyDust: { count: 800 }
+};
+
+const STATE = {
+  mode: 'TREE',
+  focusIndex: 0,
+  hand: { detected: false, x: 0 },
+  rotationVelocity: 0,
+  targetGroupPos: new THREE.Vector3(0, 0, 0)
+};
+
+let swipe = { lastX: null, lastTime: 0, cooldown: 500 };
+
+let scene, camera, renderer, composer;
+let mainGroup, treeGroup, snowSystem, ringGroup, lightTubeMesh;
+let clock = new THREE.Clock();
+let particles = [];
+let photoMeshes = [];
+let starGeo, ballGeo, glowTex, snowTex, giftTex, sockTex, appleTex;
+let baseBlueMat, baseSilverMat;
+let handLandmarker, video, webcamCanvas, webcamCtx;
+
+async function init() {
+  createResources();
+  initThree();
+  setupLights();
+
+  createTreeLeaves();
+  createFairyDust();
+  createStringLights();
+  createDecorations();
+  createMagicRings();
+  createTopStar();
+  createDefaultPhoto();
+  createSnow();
+
+  setupPostProcessing();
+  setupEvents();
+  animate();
+  initMediaPipe().catch(e => console.error(e));
+}
+
+function createEmojiTexture(emoji, size = 64) {
+  const cvs = document.createElement('canvas'); cvs.width = size; cvs.height = size;
+  const ctx = cvs.getContext('2d'); ctx.font = `${size * 0.8}px serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(emoji, size / 2, size / 2 + size * 0.1);
+  return new THREE.CanvasTexture(cvs);
+}
+
+function createResources() {
+  const cvs = document.createElement('canvas'); cvs.width = 64; cvs.height = 64;
+  const ctx = cvs.getContext('2d');
+  const grad = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+  grad.addColorStop(0, 'rgba(255,255,255,1)'); grad.addColorStop(0.4, 'rgba(100,200,255,0.5)'); grad.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = grad; ctx.fillRect(0, 0, 64, 64);
+  glowTex = new THREE.CanvasTexture(cvs);
+
+  snowTex = createEmojiTexture('❄️');
+  giftTex = createEmojiTexture('🎁');
+  sockTex = createEmojiTexture('🧦');
+  appleTex = createEmojiTexture('🍎');
+
+  baseBlueMat = new THREE.MeshStandardMaterial({ color: CONFIG.colors.blueMain, roughness: 0.3, metalness: 0.7, emissive: 0x0044aa, emissiveIntensity: 0.2 });
+  baseSilverMat = new THREE.MeshStandardMaterial({ color: CONFIG.colors.whiteSilver, roughness: 0.2, metalness: 0.9, emissive: 0x444455, emissiveIntensity: 0.2 });
+  ballGeo = new THREE.SphereGeometry(0.5, 16, 16);
+  const sShape = new THREE.Shape();
+  for (let i = 0; i < 10; i++) { const r = i % 2 === 0 ? 0.6 : 0.3; const a = i / 10 * Math.PI * 2; sShape.lineTo(Math.cos(a) * r, Math.sin(a) * r); }
+  starGeo = new THREE.ExtrudeGeometry(sShape, { depth: 0.15, bevelEnabled: true, bevelThickness: 0.05 });
+}
+
+function initThree() {
+  const container = document.getElementById('canvas-container');
+  scene = new THREE.Scene(); scene.fog = new THREE.FogExp2(0x000510, 0.012);
+  camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+  camera.position.set(0, 5, 50); camera.lookAt(0, 8, 0);
+  renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.toneMapping = THREE.ReinhardToneMapping; renderer.toneMappingExposure = 2.5;
+  container.appendChild(renderer.domElement);
+  mainGroup = new THREE.Group();
+  treeGroup = new THREE.Group();
+  mainGroup.add(treeGroup);
+  scene.add(mainGroup);
+}
+
+function setupLights() {
+  const ambient = new THREE.AmbientLight(0xddeeff, 1.2); scene.add(ambient);
+  const spot = new THREE.SpotLight(0x00bfff, 120); spot.position.set(30, 60, 50); spot.angle = 0.5; scene.add(spot);
+  const backLight = new THREE.DirectionalLight(0x00ffff, 2); backLight.position.set(-20, 20, -20); scene.add(backLight);
+}
+
+class Particle {
+  constructor(mesh, type) {
+    this.mesh = mesh; this.type = type;
+    this.basePos = mesh.position.clone(); this.baseScale = mesh.scale.x; this.baseRot = mesh.rotation.clone();
+    this.blinkOffset = Math.random() * 100; this.blinkSpeed = 2 + Math.random() * 3;
+
+    // 紧凑球体
+    const rBase = type === 'FAIRY' ? 10 : 25;
+    const r = rBase + Math.random() * 10;
+    const theta = Math.random() * Math.PI * 2;
+    const phi = Math.acos(2 * Math.random() - 1);
+    this.scatterPos = new THREE.Vector3(
+      r * Math.sin(phi) * Math.cos(theta),
+      r * Math.sin(phi) * Math.sin(theta) + 2,
+      r * Math.cos(phi)
+    );
+  }
+
+  update(dt, time) {
+    if (this.type !== 'PHOTO' && this.mesh.material && this.mesh.material.emissive) {
+      this.mesh.material.emissiveIntensity = 0.3 + 0.7 * Math.sin(time * this.blinkSpeed + this.blinkOffset);
+    }
+
+    let targetPos = this.basePos;
+    let targetScale = this.baseScale;
+    let targetRot = this.baseRot;
+
+    if (STATE.mode === 'SCATTER' || STATE.mode === 'FOCUS') {
+      targetPos = this.scatterPos;
+      this.mesh.rotation.x += dt; this.mesh.rotation.y += dt;
+
+      if (STATE.mode === 'FOCUS') {
+        if (this.type === 'PHOTO') {
+          const currentTarget = photoMeshes[STATE.focusIndex];
+          if (this.mesh === currentTarget.mesh) {
+            const inv = new THREE.Matrix4().copy(treeGroup.matrixWorld).invert();
+            targetPos = new THREE.Vector3(0, 5, 40).applyMatrix4(inv);
+
+            const aspect = currentTarget.aspect;
+            let scaleW = 5.0; let scaleH = 5.0;
+            if (aspect > 1) scaleH = scaleW / aspect;
+            else scaleW = scaleH * aspect;
+
+            this.mesh.position.lerp(targetPos, 8 * dt);
+            this.mesh.scale.lerp(new THREE.Vector3(scaleW, scaleH, 1), 8 * dt);
+
+            const targetQuat = new THREE.Quaternion();
+            targetQuat.copy(camera.quaternion);
+            const parentInv = new THREE.Quaternion().copy(treeGroup.quaternion).invert();
+            targetQuat.premultiply(parentInv);
+            this.mesh.quaternion.slerp(targetQuat, 10 * dt);
+            return;
+          } else { targetScale = 0; }
+        }
+      }
+    } else {
+      if (this.type.includes('DECO') || this.type === 'FAIRY') {
+        targetPos = this.basePos.clone();
+        targetPos.y += Math.sin(time * 2 + this.mesh.id) * 0.1;
+      }
+    }
+
+    this.mesh.position.lerp(targetPos, 4 * dt);
+    this.mesh.scale.lerp(new THREE.Vector3(targetScale, targetScale, targetScale), 4 * dt);
+    if (STATE.mode !== 'SCATTER' && STATE.mode !== 'FOCUS') {
+      this.mesh.rotation.x = THREE.MathUtils.lerp(this.mesh.rotation.x, targetRot.x, 3 * dt);
+      this.mesh.rotation.y = THREE.MathUtils.lerp(this.mesh.rotation.y, targetRot.y, 3 * dt);
+    }
+  }
+}
+
+function createTreeLeaves() {
+  const geo = new THREE.TetrahedronGeometry(0.4, 0);
+  for (let i = 0; i < CONFIG.tree.count; i++) {
+    const t = Math.random(); const h = CONFIG.tree.height; const r = CONFIG.tree.radius * (1 - t); const y = t * h - h / 2 + 2; const angle = Math.random() * Math.PI * 2;
+    const pos = new THREE.Vector3(Math.cos(angle) * r, y, Math.sin(angle) * r); pos.addScaledVector(new THREE.Vector3(Math.random() - 0.5, 0, Math.random() - 0.5), 2);
+    const mat = Math.random() > 0.6 ? baseSilverMat.clone() : baseBlueMat.clone();
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.copy(pos); mesh.rotation.set(Math.random() * 6, Math.random() * 6, Math.random() * 6); mesh.scale.setScalar(0.4 + Math.random() * 0.6);
+    treeGroup.add(mesh); particles.push(new Particle(mesh, 'LEAF'));
+  }
+}
+
+function createFairyDust() {
+  const mat = new THREE.SpriteMaterial({ map: glowTex, color: 0xe0ffff, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending });
+  for (let i = 0; i < CONFIG.fairyDust.count; i++) {
+    const t = Math.random(); const h = CONFIG.tree.height; const r = CONFIG.tree.radius * (1 - t) * 0.8; const y = t * h - h / 2 + 2; const a = Math.random() * Math.PI * 2;
+    const sprite = new THREE.Sprite(mat.clone());
+    sprite.position.set(Math.cos(a) * r, y, Math.sin(a) * r);
+    sprite.scale.setScalar(0.3 + Math.random() * 0.3);
+    treeGroup.add(sprite); particles.push(new Particle(sprite, 'FAIRY'));
+  }
+}
+
+function createStringLights() {
+  const curvePts = []; const h = CONFIG.tree.height;
+  for (let i = 0; i <= 200; i++) { const t = i / 200; const a = t * 7 * Math.PI * 2; const y = t * h - h / 2 + 1; const r = CONFIG.tree.radius * (1 - t) + 0.4; curvePts.push(new THREE.Vector3(Math.cos(a) * r, y, Math.sin(a) * r)); }
+  const curve = new THREE.CatmullRomCurve3(curvePts);
+  lightTubeMesh = new THREE.Mesh(new THREE.TubeGeometry(curve, 120, 0.05, 8, false), new THREE.MeshBasicMaterial({ color: 0x88ccff, transparent: true, opacity: 0.3 }));
+  treeGroup.add(lightTubeMesh);
+  const bulbGeo = new THREE.SphereGeometry(0.15); const bulbMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+  for (let i = 0; i < 150; i++) { const pt = curve.getPoint(i / 150); const mesh = new THREE.Mesh(bulbGeo, bulbMat.clone()); mesh.position.copy(pt); mesh.userData.blinkRate = 2 + Math.random() * 3; treeGroup.add(mesh); particles.push(new Particle(mesh, 'LIGHT')); scene.userData.bulbs = scene.userData.bulbs || []; scene.userData.bulbs.push(mesh); }
+}
+
+function createDecorations() { for (let i = 0; i < 3; i++) addDecoration('STAR'); for (let i = 0; i < 3; i++) addDecoration('GIFT'); for (let i = 0; i < 5; i++) addDecoration('BAUBLE'); }
+function addDecoration(type) {
+  let mesh; const t = Math.random(); const h = CONFIG.tree.height; const y = t * h - h / 2 + 2; const r = CONFIG.tree.radius * (1 - t) + 1.2; const a = Math.random() * Math.PI * 2; const pos = new THREE.Vector3(Math.cos(a) * r, y, Math.sin(a) * r);
+  if (type === 'STAR') { mesh = new THREE.Mesh(starGeo, baseSilverMat.clone()); mesh.scale.setScalar(1.3); }
+  else if (type === 'GIFT') { mesh = new THREE.Sprite(new THREE.SpriteMaterial({ map: giftTex })); mesh.scale.setScalar(2.0); }
+  else if (type === 'SOCK') { mesh = new THREE.Sprite(new THREE.SpriteMaterial({ map: sockTex })); mesh.scale.setScalar(2.0); }
+  else if (type === 'APPLE') { mesh = new THREE.Sprite(new THREE.SpriteMaterial({ map: appleTex })); mesh.scale.setScalar(1.8); }
+  else { mesh = new THREE.Mesh(ballGeo, Math.random() > 0.5 ? baseBlueMat.clone() : baseSilverMat.clone()); mesh.scale.setScalar(0.8); }
+  mesh.position.copy(pos); if (mesh.isMesh) mesh.lookAt(0, y, 0);
+  treeGroup.add(mesh); const p = new Particle(mesh, 'DECO_' + type); p.baseScale = mesh.scale.x; mesh.scale.set(0, 0, 0); particles.push(p);
+}
+
+function createTopStar() {
+  const geo = new THREE.OctahedronGeometry(1.5, 0); const mat = new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0x88ccff, emissiveIntensity: 2 });
+  const star = new THREE.Mesh(geo, mat); star.position.set(0, CONFIG.tree.height / 2 + 2.5, 0); treeGroup.add(star);
+}
+
+function createDefaultPhoto() {
+  const cvs = document.createElement('canvas'); cvs.width = 512; cvs.height = 512; const ctx = cvs.getContext('2d');
+  ctx.fillStyle = '#001133'; ctx.fillRect(0, 0, 512, 512); ctx.strokeStyle = '#00bfff'; ctx.lineWidth = 20; ctx.strokeRect(20, 20, 472, 472);
+  ctx.font = 'bold 80px Arial'; ctx.fillStyle = '#e0ffff'; ctx.textAlign = 'center'; ctx.fillText("Happy", 256, 220); ctx.fillText("Holidays", 256, 320);
+  addPhotoMesh(new THREE.CanvasTexture(cvs), 1.0);
+}
+
+function addPhotoMesh(tex, aspect = 1.0) {
+  const g = new THREE.Group();
+  const photoGeo = new THREE.PlaneGeometry(1, 1);
+  // 照片不发光
+  const photoMat = new THREE.MeshStandardMaterial({
+    map: tex, roughness: 0.8, metalness: 0.1, side: THREE.DoubleSide
+  });
+  const p = new THREE.Mesh(photoGeo, photoMat);
+  const frame = new THREE.Mesh(new THREE.BoxGeometry(1.1, 1.1, 0.05), baseSilverMat.clone());
+  frame.position.z = -0.03;
+  g.add(p); g.add(frame);
+
+  const h = CONFIG.tree.height; const t = Math.random(); const y = t * (h - 6) - (h / 2 - 3); const r = CONFIG.tree.radius + 2.5; const angle = Math.random() * Math.PI * 2;
+  g.position.set(Math.cos(angle) * r, y, Math.sin(angle) * r);
+  g.lookAt(0, y, 0); g.rotateY(Math.PI);
+  treeGroup.add(g);
+  const data = { mesh: g, aspect: aspect };
+  particles.push(new Particle(g, 'PHOTO'));
+  photoMeshes.push(data);
+}
+
+function createMagicRings() {
+  ringGroup = new THREE.Group(); const geo = new THREE.TorusGeometry(10, 0.1, 16, 100); const mat = new THREE.MeshBasicMaterial({ color: 0x00bfff, transparent: true, opacity: 0.5 });
+  for (let i = 0; i < 3; i++) { const ring = new THREE.Mesh(geo, mat); ring.rotation.x = Math.PI / 2; ring.position.y = -CONFIG.tree.height / 2 - 1; ring.scale.setScalar(1 + i * 0.5); ringGroup.add(ring); } scene.add(ringGroup);
+}
+
+function createSnow() {
+  const geo = new THREE.BufferGeometry();
+  const pos = [];
+  for (let i = 0; i < 2000; i++) {
+    pos.push((Math.random() - 0.5) * 100, (Math.random() - 0.5) * 100, (Math.random() - 0.5) * 100);
+  }
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  snowSystem = new THREE.Points(geo, new THREE.PointsMaterial({ color: 0xffffff, size: 1.5, map: snowTex, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false }));
+  scene.add(snowSystem);
+}
+
+function setupPostProcessing() {
+  const rp = new RenderPass(scene, camera); const bp = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85);
+  bp.threshold = 0.1; bp.strength = 1.2; bp.radius = 0.6; composer = new EffectComposer(renderer); composer.addPass(rp); composer.addPass(bp);
+}
+
+function setupEvents() {
+  window.addEventListener('resize', () => { camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight); composer.setSize(window.innerWidth, window.innerHeight); });
+  document.getElementById('btn-add-star').onclick = () => addDecoration('STAR'); document.getElementById('btn-add-gift').onclick = () => addDecoration('GIFT'); document.getElementById('btn-add-sock').onclick = () => addDecoration('SOCK'); document.getElementById('btn-add-apple').onclick = () => addDecoration('APPLE'); document.getElementById('btn-add-bauble').onclick = () => addDecoration('BAUBLE');
+
+  const fileInput = document.getElementById('file-input');
+  fileInput.addEventListener('change', (e) => {
+    if (e.target.files && e.target.files.length > 0) {
+      Array.from(e.target.files).forEach(file => {
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          const img = new Image();
+          img.src = ev.target.result;
+          img.onload = () => {
+            const aspect = img.width / img.height;
+            new THREE.TextureLoader().load(ev.target.result, (tex) => {
+              tex.colorSpace = THREE.SRGBColorSpace;
+              addPhotoMesh(tex, aspect);
+              STATE.focusIndex = photoMeshes.length - 1;
+              document.getElementById('instruction-text').innerText = "照片已添加! 扩散后单指查看";
+            });
+          }
+        };
+        reader.readAsDataURL(file);
+      });
+      fileInput.value = '';
+    }
+  });
+}
+
+async function initMediaPipe() {
+  video = document.getElementById('webcam'); webcamCanvas = document.getElementById('webcam-preview'); webcamCtx = webcamCanvas.getContext('2d'); webcamCanvas.width = 160; webcamCanvas.height = 120;
+  const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm");
+  handLandmarker = await HandLandmarker.createFromOptions(vision, { baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`, delegate: "GPU" }, runningMode: "VIDEO", numHands: 1 });
+  if (navigator.mediaDevices?.getUserMedia) { const stream = await navigator.mediaDevices.getUserMedia({ video: true }); video.srcObject = stream; video.addEventListener("loadeddata", predictWebcam); document.getElementById('gesture-status').innerText = "摄像头就绪"; }
+}
+
+let lastTime = -1;
+async function predictWebcam() {
+  if (video.currentTime !== lastTime && handLandmarker) {
+    lastTime = video.currentTime; const res = handLandmarker.detectForVideo(video, performance.now());
+    webcamCtx.clearRect(0, 0, 160, 120); webcamCtx.drawImage(video, 0, 0, 160, 120);
+    if (res.landmarks && res.landmarks.length > 0) {
+      processGestures(res.landmarks[0]); webcamCtx.fillStyle = 'cyan'; for (let p of res.landmarks[0]) { webcamCtx.beginPath(); webcamCtx.arc(p.x * 160, p.y * 120, 2, 0, 7); webcamCtx.fill(); }
+    } else {
+      STATE.hand.detected = false;
+    }
+  } requestAnimationFrame(predictWebcam);
+}
+
+function switchPhoto(dir) {
+  const now = performance.now();
+  if (now - swipe.lastTime < swipe.cooldown) return;
+  const len = photoMeshes.length; if (len === 0) return;
+  STATE.focusIndex = (STATE.focusIndex + dir + len) % len;
+  swipe.lastTime = now;
+  document.getElementById('instruction-text').innerText = `已切换: ${dir > 0 ? '下一张' : '上一张'} (${STATE.focusIndex + 1}/${len})`;
+}
+
+function findClosestPhotoIndex() {
+  let closestIndex = 0;
+  let minDistance = Infinity;
+  photoMeshes.forEach((item, index) => {
+    const worldPos = new THREE.Vector3();
+    item.mesh.getWorldPosition(worldPos);
+    const dist = camera.position.distanceTo(worldPos);
+    if (dist < minDistance) { minDistance = dist; closestIndex = index; }
+  });
+  return closestIndex;
+}
+
+function processGestures(lm) {
+  STATE.hand.detected = true;
+  const palmX = (lm[9].x - 0.5) * 2;
+  const palmY = (lm[9].y - 0.5) * 2;
+  const wrist = lm[0];
+  const indexTip = lm[8]; const middleTip = lm[12]; const ringTip = lm[16]; const pinkyTip = lm[20];
+
+  // 计算张开
+  let spread = 0;
+  [indexTip, middleTip, ringTip, pinkyTip].forEach(t => spread += Math.hypot(t.x - wrist.x, t.y - wrist.y));
+  spread /= 4;
+
+  // 修复：单指判断逻辑更严格
+  // 只有食指伸出 (距离手腕远)，其他三个指头缩回 (距离手腕近)
+  const dIndex = Math.hypot(indexTip.x - wrist.x, indexTip.y - wrist.y);
+  const dMiddle = Math.hypot(middleTip.x - wrist.x, middleTip.y - wrist.y);
+  const dRing = Math.hypot(ringTip.x - wrist.x, ringTip.y - wrist.y);
+  const dPinky = Math.hypot(pinkyTip.x - wrist.x, pinkyTip.y - wrist.y);
+
+  // 阈值：食指 > 0.25, 其他 < 0.25 (根据实际摄像头调试)
+  const isPointing = (dIndex > 0.25) && (dMiddle < 0.25) && (dRing < 0.25) && (dPinky < 0.25);
+
+  let msg = "";
+
+  // 1. 优先级：单指看照片 (仅在扩散或聚焦模式下)
+  if (isPointing && (STATE.mode === 'SCATTER' || STATE.mode === 'FOCUS')) {
+    if (STATE.mode === 'SCATTER') { STATE.focusIndex = findClosestPhotoIndex(); }
+    STATE.mode = 'FOCUS'; toggleUI(false);
+
+    // 滑动切图
+    if (swipe.lastX !== null) {
+      const diff = indexTip.x - swipe.lastX;
+      if (diff > 0.05) switchPhoto(-1); else if (diff < -0.05) switchPhoto(1);
+    }
+    swipe.lastX = indexTip.x;
+    msg = "☝️ 单指: 查看照片 (左右滑动切图)";
+  }
+  // 2. 优先级：握拳合体 (必须所有手指缩回，spread很小)
+  else if (spread < 0.25) {
+    STATE.mode = 'TREE';
+    STATE.targetGroupPos.set(0, 0, 0);
+    STATE.rotationVelocity = THREE.MathUtils.lerp(STATE.rotationVelocity, -palmX * 3.0, 0.1);
+    msg = "✊ 握拳: 还原 & 旋转";
+    toggleUI(true);
+  }
+  // 3. 优先级：张开扩散
+  else if (spread > 0.55) {
+    STATE.mode = 'SCATTER'; swipe.lastX = null;
+    STATE.targetGroupPos.x = -palmX * 20; STATE.targetGroupPos.y = palmY * 15;
+    STATE.rotationVelocity = -palmX * 2.0;
+    msg = "✋ 散落: 跟随移动"; toggleUI(false);
+  }
+  // 4. 悬停
+  else {
+    if (STATE.mode === 'FOCUS') STATE.mode = 'SCATTER';
+    if (STATE.mode === 'SCATTER') { msg = "手掌悬停 (扩散)"; toggleUI(false); }
+    else { STATE.mode = 'TREE'; STATE.targetGroupPos.set(0, 0, 0); msg = "手掌悬停"; toggleUI(true); }
+  }
+  document.getElementById('gesture-status').innerText = msg;
+}
+
+function toggleUI(show) {
+  const left = document.querySelector('.left-panel');
+  const bottom = document.querySelector('.bottom-panel');
+  if (show) { left.classList.remove('hidden'); bottom.classList.remove('hidden'); }
+  else { left.classList.add('hidden'); bottom.classList.add('hidden'); }
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = clock.getDelta();
+  const time = clock.elapsedTime;
+  if (STATE.mode !== 'FOCUS') {
+    treeGroup.rotation.y += STATE.rotationVelocity * dt;
+    treeGroup.position.lerp(STATE.targetGroupPos, 2 * dt);
+  }
+  particles.forEach(p => p.update(dt, time));
+  if (lightTubeMesh) lightTubeMesh.visible = (STATE.mode === 'TREE');
+
+  if (snowSystem) {
+    const pos = snowSystem.geometry.attributes.position.array;
+    for (let i = 0; i < 2000; i++) {
+      pos[i * 3 + 1] -= 5 * dt;
+      if (pos[i * 3 + 1] < -50) { pos[i * 3 + 1] = 50 + Math.random() * 5; }
+    }
+    snowSystem.geometry.attributes.position.needsUpdate = true;
+  }
+  if (scene.userData.bulbs) scene.userData.bulbs.forEach(b => b.material.color.setHSL(0.6, 1.0, 0.5 + 0.5 * Math.sin(time * b.userData.blinkRate)));
+  composer.render();
+}
+init();

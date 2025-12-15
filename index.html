@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>♥ For ylx ♥</title>
+  <link rel="stylesheet" href="style.css">
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700&display=swap');
+  </style>
+  <script type="importmap">
+    { 
+      "imports": 
+      { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js", 
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/", 
+        "@mediapipe/tasks-vision": "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/+esm" 
+      } 
+    } 
+  </script>
+</head>
+
+<body>
+  <!-- 3D 渲染容器 -->
+  <div id="canvas-container"></div>
+  <!-- UI 层 -->
+  <div id="ui-layer">
+    <h1>Merry Christmas</h1>
+    <div class="left-panel" id="deco-panel">
+      <button class="deco-btn" id="btn-add-star">★</button>
+      <button class="deco-btn" id="btn-add-gift">🎁</button>
+      <button class="deco-btn" id="btn-add-sock">🧦</button>
+      <button class="deco-btn" id="btn-add-apple">🍎</button>
+      <button class="deco-btn" id="btn-add-bauble">●</button>
+    </div>
+    <div class="bottom-panel" id="bottom-panel">
+      <label class="btn-photo">
+        📷 上传照片
+        <input type="file" id="file-input" multiple accept="image/*">
+      </label>
+      <div class="instruction" id="instruction-text">✋张开:散落 | 散落时☝️单指:看照片 | ✊握拳:合体</div>
+    </div>
+  </div>
+
+  <!-- 摄像头相关 -->
+  <div id="webcam-wrapper">
+    <video id="webcam" autoplay playsinline style="display:block;"></video>
+    <canvas id="webcam-preview"></canvas>
+    <div id="gesture-status">启动摄像头...</div>
+  </div>
+
+  <script type="module" src="script.js"></script>
+</body>
+
+</html>
