@@ -37,7 +37,6 @@ async function init() {
   createTreeLeaves();
   createFairyDust();
   createStringLights();
-  createDecorations();
   createMagicRings();
   createTopStar();
   createDefaultPhoto();
@@ -270,7 +269,6 @@ function setupPostProcessing() {
 
 function setupEvents() {
   window.addEventListener('resize', () => { camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight); composer.setSize(window.innerWidth, window.innerHeight); });
-  document.getElementById('btn-add-star').onclick = () => addDecoration('STAR'); document.getElementById('btn-add-gift').onclick = () => addDecoration('GIFT'); document.getElementById('btn-add-sock').onclick = () => addDecoration('SOCK'); document.getElementById('btn-add-apple').onclick = () => addDecoration('APPLE'); document.getElementById('btn-add-bauble').onclick = () => addDecoration('BAUBLE');
 
   const fileInput = document.getElementById('file-input');
   fileInput.addEventListener('change', (e) => {
