@@ -219,16 +219,15 @@ function createTopStar() {
 function createDefaultPhoto() {
   // 从GitHub仓库加载图片
   const photoUrls = [
-    "https://katow1ce.github.io/Merry-Christmas/images/photo1.jpg",
-    "https://katow1ce.github.io/Merry-Christmas/images/photo2.jpg",
-    "https://katow1ce.github.io/Merry-Christmas/images/photo3.jpg",
-    "https://katow1ce.github.io/Merry-Christmas/images/photo4.jpg",
-    "https://katow1ce.github.io/Merry-Christmas/images/photo5.jpg",
-    "https://katow1ce.github.io/Merry-Christmas/images/photo6.jpg",
-    "https://katow1ce.github.io/Merry-Christmas/images/photo7.jpg",
-    "https://katow1ce.github.io/Merry-Christmas/images/photo8.jpg",
-    "https://katow1ce.github.io/Merry-Christmas/images/photo9.jpg",
-
+    './images/photo1.jpg',
+    './images/photo2.jpg',
+    './images/photo3.jpg',
+    './images/photo4.jpg',
+    './images/photo5.jpg',
+    './images/photo6.jpg',
+    './images/photo7.jpg',
+    './images/photo8.jpg',
+    './images/photo9.jpg',
   ];
 
   // 加载所有照片
@@ -236,7 +235,7 @@ function createDefaultPhoto() {
     new THREE.TextureLoader().load(url, (tex) => {
       tex.colorSpace = THREE.SRGBColorSpace;
       // 这里假设照片是4:3比例，实际使用时可以根据需要调整
-      addPhotoMesh(tex, 4 / 3);
+      addPhotoMesh(tex, 3 / 4);
     },
       undefined, // 加载进度回调（可选）
       (err) => { // 错误处理
